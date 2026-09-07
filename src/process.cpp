@@ -1,33 +1,45 @@
-#include <unistd.h>
-#include <cctype>
-#include <sstream>
-#include <string>
-#include <vector>
-
 #include "process.h"
 
-using std::string;
-using std::to_string;
-using std::vector;
+#include <unistd.h>
 
-// TODO: Return this process's ID
-int Process::Pid() { return 0; }
+#include <algorithm>
+#include <string>
 
-// TODO: Return this process's CPU utilization
-float Process::CpuUtilization() { return 0; }
+#include "linux_parser.h"
 
-// TODO: Return the command that generated this process
-string Process::Command() { return string(); }
+Process::Process(int pid)
+    : pid_(pid),
+      user_(LinuxParser::User(pid)),
+      command_(LinuxParser::Command(pid)),
+      ram_(LinuxParser::Ram(pid)),
+      uptime_(LinuxParser::UpTime(pid)) {
+  long const ticks_per_second{sysconf(_SC_CLK_TCK)};
+  if (ticks_per_second > 0 && uptime_ > 0) {
+    double const cpu_seconds{
+        static_cast<double>(LinuxParser::ActiveJiffies(pid)) /
+        static_cast<double>(ticks_per_second)};
+    cpu_utilization_ =
+        static_cast<float>(cpu_seconds / static_cast<double>(uptime_));
+  }
+  cpu_utilization_ = std::max(0.0F, cpu_utilization_);
+}
 
-// TODO: Return this process's memory utilization
-string Process::Ram() { return string(); }
+int Process::Pid() const { return pid_; }
 
-// TODO: Return the user (name) that generated this process
-string Process::User() { return string(); }
+float Process::CpuUtilization() const { return cpu_utilization_; }
 
-// TODO: Return the age of this process (in seconds)
-long int Process::UpTime() { return 0; }
+std::string Process::Command() const { return command_; }
 
-// TODO: Overload the "less than" comparison operator for Process objects
-// REMOVE: [[maybe_unused]] once you define the function
-bool Process::operator<(Process const& a[[maybe_unused]]) const { return true; }
+std::string Process::Ram() const { return ram_; }
+
+std::string Process::User() const { return user_; }
+
+long int Process::UpTime() const { return uptime_; }
+
+bool Process::operator<(Process const& other) const {
+  if (cpu_utilization_ == other.cpu_utilization_) {
+    return pid_ < other.pid_;
+  }
+  // std::sort then places the busiest processes at the top of the display.
+  return cpu_utilization_ > other.cpu_utilization_;
+}

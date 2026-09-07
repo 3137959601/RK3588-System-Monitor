@@ -3,5 +3,6 @@ a.out
 settings.json
 *.o
 build/*
+/build*/
 *.json
 .github/**
