@@ -2,15 +2,23 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "csv_logger.h"
 #include "format.h"
 #include "linux_parser.h"
+#include "metric_collector.h"
 #include "process.h"
 #include "processor.h"
+#include "sampler.h"
 #include "system.h"
 
 namespace {
@@ -27,6 +35,41 @@ void Check(bool condition, std::string const& message) {
 }
 
 bool InUnitRange(float value) { return value >= 0.0F && value <= 1.0F; }
+
+void WriteFile(std::filesystem::path const& path, std::string const& value) {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream stream(path);
+  stream << value;
+}
+
+bool HasNode(MetricSnapshot const& snapshot, std::string const& name,
+             bool available) {
+  return std::any_of(snapshot.nodes.begin(), snapshot.nodes.end(),
+                     [&name, available](NodeStatus const& node) {
+                       return node.name == name && node.available == available;
+                     });
+}
+
+class CountingCollector : public IMetricCollector {
+ public:
+  MetricSnapshot Collect() override {
+    MetricSnapshot snapshot;
+    snapshot.timestamp = std::chrono::system_clock::now();
+    snapshot.sequence = ++sequence_;
+    snapshot.cpu_utilization = 0.25F;
+    snapshot.memory_utilization = 0.5F;
+    snapshot.uptime_seconds = 10;
+    return snapshot;
+  }
+
+ private:
+  std::uint64_t sequence_{0};
+};
+
+class ThrowingCollector : public IMetricCollector {
+ public:
+  MetricSnapshot Collect() override { throw std::runtime_error("模拟采集失败"); }
+};
 
 }  // namespace
 
@@ -92,6 +135,99 @@ int main() {
   Check(!processes.empty(), "System生成进程快照");
   Check(std::is_sorted(processes.begin(), processes.end()),
         "进程按CPU占用从高到低排序");
+
+  std::filesystem::path const fixture{
+      std::filesystem::temp_directory_path() /
+      ("rk3588-monitor-test-" + std::to_string(self_pid))};
+  std::filesystem::remove_all(fixture);
+  WriteFile(fixture / "sys/class/thermal/thermal_zone0/type", "soc-thermal\n");
+  WriteFile(fixture / "sys/class/thermal/thermal_zone0/temp", "42500\n");
+  WriteFile(fixture / "sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq",
+            "1296000\n");
+  WriteFile(fixture / "sys/class/devfreq/fb000000.gpu/name",
+            "fb000000.gpu\n");
+  WriteFile(fixture / "sys/class/devfreq/fb000000.gpu/cur_freq",
+            "300000000\n");
+  WriteFile(fixture / "sys/class/devfreq/fdab0000.npu/name",
+            "fdab0000.npu\n");
+  WriteFile(fixture / "sys/class/devfreq/fdab0000.npu/cur_freq",
+            "950000000\n");
+  WriteFile(fixture / "dev/mali0", "");
+  WriteFile(fixture / "dev/mpp_service", "");
+  WriteFile(fixture / "dev/rga", "");
+
+  Rk3588MetricCollector rk_collector(fixture / "sys", fixture / "dev");
+  MetricSnapshot const rk_snapshot{rk_collector.Collect()};
+  Check(rk_snapshot.sequence == 1, "RK3588采集快照序号递增");
+  Check(rk_snapshot.temperatures.size() == 1 &&
+            rk_snapshot.temperatures.front().value == 42.5,
+        "RK3588温区毫摄氏度转换为摄氏度");
+  Check(rk_snapshot.cpu_frequencies.size() == 1 &&
+            rk_snapshot.cpu_frequencies.front().value == 1296.0,
+        "CPU频率kHz转换为MHz");
+  Check(rk_snapshot.gpu_frequency_mhz == 300.0,
+        "GPU devfreq Hz转换为MHz");
+  Check(rk_snapshot.npu_frequency_mhz == 950.0,
+        "NPU devfreq Hz转换为MHz");
+  Check(HasNode(rk_snapshot, "mali", true) &&
+            HasNode(rk_snapshot, "npu", true) &&
+            HasNode(rk_snapshot, "mpp", true) &&
+            HasNode(rk_snapshot, "rga", true),
+        "识别Mali/NPU/MPP/RGA可用节点");
+
+  std::filesystem::path const csv_path{fixture / "metrics.csv"};
+  {
+    CsvLogger logger(csv_path);
+    logger.Append(rk_snapshot);
+  }
+  std::ifstream csv_stream(csv_path);
+  std::string csv_content((std::istreambuf_iterator<char>(csv_stream)),
+                          std::istreambuf_iterator<char>());
+  Check(csv_content.find("timestamp_utc,sequence,cpu_percent") == 0,
+        "CSV首次写入包含固定表头");
+  Check(csv_content.find("soc-thermal=42.500") != std::string::npos &&
+            csv_content.find(",1,1,1,1") != std::string::npos,
+        "CSV写入板级指标与节点状态");
+
+  Sampler sampler(std::make_unique<CountingCollector>(),
+                  std::chrono::milliseconds(20));
+  sampler.Start();
+  std::this_thread::sleep_for(std::chrono::milliseconds(75));
+  auto first_sample{sampler.Snapshot()};
+  Check(first_sample && first_sample->sequence >= 2,
+        "后台Sampler周期更新线程安全快照");
+  sampler.Pause();
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  auto paused_sample{sampler.Snapshot()};
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  auto paused_sample_later{sampler.Snapshot()};
+  Check(sampler.Paused() && paused_sample && paused_sample_later &&
+            paused_sample_later->sequence == paused_sample->sequence,
+        "Sampler暂停后快照保持不变");
+  sampler.SetInterval(std::chrono::milliseconds(10));
+  sampler.Resume();
+  std::this_thread::sleep_for(std::chrono::milliseconds(35));
+  auto resumed_sample{sampler.Snapshot()};
+  Check(resumed_sample && paused_sample_later &&
+            resumed_sample->sequence > paused_sample->sequence,
+        "Sampler恢复并应用新的采样间隔");
+  sampler.Stop();
+  Check(!sampler.Running(), "Sampler安全停止并回收后台线程");
+
+  Sampler failing_sampler(std::make_unique<ThrowingCollector>(),
+                          std::chrono::milliseconds(10));
+  failing_sampler.Start();
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  Check(!failing_sampler.Running() && failing_sampler.LastError() &&
+            *failing_sampler.LastError() == "模拟采集失败",
+        "Sampler保存后台异常且不会终止整个进程");
+  failing_sampler.Start();
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  Check(!failing_sampler.Running() && failing_sampler.LastError(),
+        "Sampler可回收失败线程并重新启动");
+  failing_sampler.Stop();
+
+  std::filesystem::remove_all(fixture);
 
   if (failures == 0) {
     std::cout << "全部测试通过" << '\n';

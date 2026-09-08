@@ -4,15 +4,20 @@ project(monitor LANGUAGES CXX)
 find_package(Curses REQUIRED)
 
 add_library(monitor_core
+  src/csv_logger.cpp
   src/format.cpp
   src/linux_parser.cpp
+  src/metric_collector.cpp
   src/process.cpp
   src/processor.cpp
+  src/sampler.cpp
   src/system.cpp
 )
 target_include_directories(monitor_core PUBLIC include)
 target_compile_features(monitor_core PUBLIC cxx_std_17)
 target_compile_options(monitor_core PRIVATE -Wall -Wextra -Wpedantic)
+find_package(Threads REQUIRED)
+target_link_libraries(monitor_core PUBLIC Threads::Threads)
 
 add_executable(monitor
   src/main.cpp
