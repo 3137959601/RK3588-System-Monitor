@@ -212,12 +212,33 @@ git diff --check
 
 上传时Windows裸仓库已经包含用户提交`cec42ce`，所以Git拒绝用Ubuntu的兄弟提交非快进更新`main`。两个提交的第二天核心内容一致；按用户决定保留Windows提交作为主历史，不强推覆盖，再把后来增加的`monitor_probe`作为后续提交。
 
-## 9. 下一门禁
+## 9. RK3588真机验证结果
 
-当前批次保持未提交，先审阅接口边界、并发语义和测试。批准后执行：
+第二天代码提交后，通过里程碑bundle在板端执行`git merge --ff-only`，没有覆盖板端未提交文件。板端提交为：
 
-1. Ubuntu提交并生成里程碑bundle；
-2. Windows裸仓库和GitHub同步；
-3. RK3588检出同一提交并原生构建；
-4. 真机核对7个温区、3个CPU策略、GPU/NPU频率、设备节点和CSV连续日志；
-5. 再进入Unix Domain Socket、`monitorctl`、`--headless`、信号安全退出大类。
+```text
+3b89566919b040371a5d6770b45f81b42c47ca56
+```
+
+实际命令：
+
+```bash
+cd /root/projects/RK3588_System_Monitor
+cmake -S . -B build-debug \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build build-debug --parallel 8
+cd build-debug
+ctest --output-on-failure
+./monitor_probe --count 3 --interval 200 \
+  --csv /tmp/rk3588-day2-metrics.csv
+```
+
+结果：CTest 1/1通过；`monitor`、`monitor_probe`和`monitor_tests`均确认为ARM AArch64 ELF。真实采集得到7个温区、3个CPU策略，GPU为300 MHz、NPU为950 MHz，Mali/NPU/MPP/RGA均显示节点可用；CSV为1行表头加3行数据。温度约31.5°C、频率和利用率都是当次瞬时值，只证明采集链路工作，不代表压力性能。
+
+## 10. 下一门禁
+
+第二天代码已经提交、上传GitHub并通过RK3588真机验证。用户学习本阶段内容后，再执行：
+
+1. 回答采集接口、快照、线程同步和sysfs单位换算的关键问题；
+2. 再进入Unix Domain Socket、`monitorctl`、`--headless`、信号安全退出大类。
