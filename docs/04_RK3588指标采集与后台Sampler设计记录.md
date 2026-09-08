@@ -10,6 +10,7 @@
 - `Rk3588MetricCollector`：读取RK3588温区、CPU/GPU/NPU频率及Mali/MPP/RGA节点；
 - `Sampler`：后台线程、暂停/恢复、动态间隔、线程安全快照和异常收敛；
 - `CsvLogger`：把快照持续保存为稳定列结构的CSV；
+- `monitor_probe`：有限次数运行入口，用真实节点打印指标并可生成CSV；
 - 伪sysfs与伪设备节点测试、Sampler时序测试和异常恢复测试。
 
 Ubuntu Debug构建、55项检查、CTest及ASan/UBSan已通过。源码已同步到Windows审阅工作副本，但本批尚未提交，也未部署到RK3588；板端仍保持只测试已提交版本的边界。
@@ -127,6 +128,7 @@ include/sampler.h
 src/metric_collector.cpp
 src/csv_logger.cpp
 src/sampler.cpp
+src/monitor_probe.cpp
 tests/system_monitor_tests.cpp
 docs/04_RK3588指标采集与后台Sampler设计记录.md
 ```
@@ -174,6 +176,15 @@ git diff --check
 
 结果：Debug和Sanitizer版本均构建成功；55项检查全部通过；CTest 1/1通过；没有AddressSanitizer、UndefinedBehaviorSanitizer或diff空白错误。
 
+实际运行入口：
+
+```bash
+./build-debug/monitor_probe --count 5 --interval 1000
+./build-debug/monitor_probe --count 5 --interval 1000 --csv /tmp/rk3588-metrics.csv
+```
+
+第一条每秒采样一次，共打印5次后自动退出；第二条同时生成CSV。采用有限次数而不是常驻后台，便于第二天独立验证采集与日志；常驻服务、远程控制和信号退出属于第三天内容。
+
 新增测试覆盖：
 
 - 毫摄氏度、kHz、Hz的单位转换；
@@ -196,6 +207,10 @@ git diff --check
 解决：先检查8个明确文件都位于仓库根目录，再使用非递归`rm -- <明确文件列表>`删除；之后不再动态拼接路径，而是按`include/`、`src/`、`tests/`三组使用明确SCP目标。复查`git status`后文件全部位于正确目录。
 
 经验：跨Shell处理路径时，反斜杠既可能是PowerShell/正则语义，也可能是Windows路径分隔符。少量关键文件应优先用明确目标目录；若必须转换，先输出转换结果，再执行写操作。
+
+### Ubuntu与Windows同时产生兄弟提交
+
+上传时Windows裸仓库已经包含用户提交`cec42ce`，所以Git拒绝用Ubuntu的兄弟提交非快进更新`main`。两个提交的第二天核心内容一致；按用户决定保留Windows提交作为主历史，不强推覆盖，再把后来增加的`monitor_probe`作为后续提交。
 
 ## 9. 下一门禁
 

@@ -28,6 +28,11 @@ target_compile_features(monitor PRIVATE cxx_std_17)
 target_compile_options(monitor PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(monitor PRIVATE monitor_core ${CURSES_LIBRARIES})
 
+add_executable(monitor_probe src/monitor_probe.cpp)
+target_compile_features(monitor_probe PRIVATE cxx_std_17)
+target_compile_options(monitor_probe PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(monitor_probe PRIVATE monitor_core)
+
 include(CTest)
 if(BUILD_TESTING)
   add_executable(monitor_tests tests/system_monitor_tests.cpp)
